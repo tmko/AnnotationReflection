@@ -24,7 +24,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -32,7 +31,6 @@ import java.util.stream.Collectors;
 public class ArgumentParser {
     public final static String SEPARATOR = ",";
     public final static String DEFAULT_DATE_FORMAT = "yyyy-MM-dd";
-    public final static BiFunction<Field, Option, Optional<Option>> NO_CUSTOM_OPTION = (f, o) -> Optional.of(o);
     public final static Map<Class<?>, Function<String, ?>> NO_CUSTOM_SETTER = Collections.EMPTY_MAP;
 
     private static final String NOT_ARGUMENT_TYPE = "%s is not an Argument annotation.";
@@ -42,18 +40,14 @@ public class ArgumentParser {
     private static final String UNEXPECTED_ARGUMENT_TYPE = "A new Argument type is detected but not handle.";
     private static final String ERROR_PARSING_ARG = "Error found during argument parsing %s";
     private static final String PRIMITIVE_ARRAY_FOUND = "Use wrapper type for array for field %s";
+    private static final String OPTION_DEFINED ="Option field %s defined opt:%s,%s hasArgs:%b, required:%b ";
 
     private Options options = new Options();
 
     private List<Field> fieldsAnnotatedAsArgument = Collections.EMPTY_LIST;
     private Map<Class<?>, Function<String, ?>> fieldsValueSetters = new HashMap<>();
 
-
-    public ArgumentParser () {
-        this (NO_CUSTOM_OPTION);
-    }
-
-    public ArgumentParser(BiFunction<Field, Option, Optional<Option>> customOptionSetting) {
+    public ArgumentParser() {
         Class<?> childClass = getClass();
         List<Field> allFields = Arrays.asList(childClass.getDeclaredFields());
         this.fieldsAnnotatedAsArgument = allFields.stream()
@@ -65,11 +59,16 @@ public class ArgumentParser {
 
             validate(field.getName(), field.getType(), annotation);
             Option optionWithBasicSetting = objectFactory(annotation);
-            Optional<Option> option = customOptionSetting.apply(field, optionWithBasicSetting);
-
+            Optional<Option> option = hookForCustomOptionSetting(field, optionWithBasicSetting);
             option.ifPresent(x -> options.addOption(x));
         }
     }
+
+    protected Optional<Option> hookForCustomOptionSetting (Field f, Option o) {
+        log.info(String.format(OPTION_DEFINED, f.getName(), o.getOpt(), o.hasLongOpt(), o.hasArgs(), o.isRequired()));
+        return Optional.of(o);
+    }
+
 
     private Option objectFactory(Argument annotation) {
         boolean isLongOptionDefined = defined(annotation.longOpt());
@@ -94,12 +93,8 @@ public class ArgumentParser {
      * @return this method return this for linking method call
      */
     public ArgumentParser parse (String... args) {
-        return parse(NO_CUSTOM_SETTER, args);
-    }
-
-    public ArgumentParser parse (Map<Class<?>, Function<String, ?>> customValueSetter, String... args) {
         configureDefaultFieldsValueSetters();
-        fieldsValueSetters.putAll(customValueSetter);
+        fieldsValueSetters.putAll(hookCustomTypeConversion());
 
         CommandLineParser parser = new DefaultParser();
         try {
@@ -117,6 +112,10 @@ public class ArgumentParser {
             throw new ParsingException.IllegalState(String.format(ERROR_PARSING_ARG, Arrays.toString(args)), e);
         }
         return this;
+    }
+
+    public Map<Class<?>, Function<String, ?>> hookCustomTypeConversion (){
+        return Collections.emptyMap();
     }
 
     public String getCmdValueFromTerminalAsString(Argument annotation, CommandLine cmd) {
