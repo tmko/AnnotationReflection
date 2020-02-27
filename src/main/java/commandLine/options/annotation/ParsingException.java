@@ -1,8 +1,7 @@
 package commandLine.options.annotation;
 
-public class ParsingException {
-
-
+public final class ParsingException extends RuntimeException {
+    private ParsingException() { super(); }
 
     public static class IllDefinedOptions extends RuntimeException {
         public IllDefinedOptions() { super(); }
