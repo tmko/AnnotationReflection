@@ -16,6 +16,7 @@ import java.lang.reflect.Field;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Date;
@@ -25,13 +26,11 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Function;
-import java.util.stream.Collectors;
+
+import static java.util.stream.Collectors.toList;
 
 @Slf4j
 public class ArgumentParser {
-    public final static String SEPARATOR = ",";
-    public final static String DEFAULT_DATE_FORMAT = "yyyy-MM-dd";
-    public final static Map<Class<?>, Function<String, ?>> NO_CUSTOM_SETTER = Collections.EMPTY_MAP;
 
     private static final String NOT_ARGUMENT_TYPE = "%s is not an Argument annotation.";
     private static final String MISSING_OPT = "%s does not define a flag.";
@@ -40,51 +39,46 @@ public class ArgumentParser {
     private static final String UNEXPECTED_ARGUMENT_TYPE = "A new Argument type is detected but not handle.";
     private static final String ERROR_PARSING_ARG = "Error found during argument parsing %s";
     private static final String PRIMITIVE_ARRAY_FOUND = "Use wrapper type for array for field %s";
-    private static final String OPTION_DEFINED ="Option field %s defined opt:%s,%s hasArgs:%b, required:%b ";
+    private static final String OPTION_DEFINED ="Option field {} defined opt:{},{} hasArgs:{}, required:{}.";
 
     private Options options = new Options();
+    private Map<Class<?>, Function<String, ?>> stringValueTransformer = new HashMap<>();
 
-    private List<Field> fieldsAnnotatedAsArgument = Collections.EMPTY_LIST;
-    private Map<Class<?>, Function<String, ?>> fieldsValueSetters = new HashMap<>();
+    private List<Field> fieldsAnnotatedAsArgument;
 
     public ArgumentParser() {
-        Class<?> childClass = getClass();
-        List<Field> allFields = Arrays.asList(childClass.getDeclaredFields());
-        this.fieldsAnnotatedAsArgument = allFields.stream()
-                .filter(f -> f.getAnnotation(Argument.class) != null)
-                .collect(Collectors.toList());
+        this.fieldsAnnotatedAsArgument = getArgumentAnnotationsThroughInheritance();
 
         for (Field field : fieldsAnnotatedAsArgument) {
             Argument annotation = field.getAnnotation(Argument.class);
 
             validate(field.getName(), field.getType(), annotation);
-            Option optionWithBasicSetting = objectFactory(annotation);
+            Option optionWithBasicSetting = cliCommandOptionObjectFactory(annotation);
             Optional<Option> option = hookForCustomOptionSetting(field, optionWithBasicSetting);
             option.ifPresent(x -> options.addOption(x));
         }
     }
 
-    protected Optional<Option> hookForCustomOptionSetting (Field f, Option o) {
-        log.info(String.format(OPTION_DEFINED, f.getName(), o.getOpt(), o.hasLongOpt(), o.hasArgs(), o.isRequired()));
-        return Optional.of(o);
-    }
-
-
-    private Option objectFactory(Argument annotation) {
+    private Option cliCommandOptionObjectFactory(Argument annotation) {
         boolean isLongOptionDefined = defined(annotation.longOpt());
         boolean isDescriptionProvided = defined(annotation.description());
-
+        boolean isRequired = annotation.type().isRequired;
         boolean hasArg = annotation.type().hasArg;
         String opt = annotation.value();
         String description = isDescriptionProvided ? annotation.description() : annotation.type().defaultDescription;
 
         Option option = new Option(opt, hasArg, description);
-        option.setRequired(annotation.type().isRequired);
+        option.setRequired(isRequired);
         if ( isLongOptionDefined ) {
             option.setLongOpt(annotation.longOpt());
         }
 
         return option;
+    }
+
+    protected Optional<Option> hookForCustomOptionSetting (Field f, Option o) {
+        log.info(OPTION_DEFINED, f.getName(), o.getOpt(), o.hasLongOpt(), o.hasArgs(), o.isRequired());
+        return Optional.of(o);
     }
 
     /**
@@ -94,7 +88,7 @@ public class ArgumentParser {
      */
     public ArgumentParser parse (String... args) {
         configureDefaultFieldsValueSetters();
-        fieldsValueSetters.putAll(hookCustomTypeConversion());
+        stringValueTransformer.putAll(hookCustomTypeConversion());
 
         CommandLineParser parser = new DefaultParser();
         try {
@@ -102,9 +96,7 @@ public class ArgumentParser {
             for (Field field : this.fieldsAnnotatedAsArgument){
                 Argument annotation = field.getAnnotation(Argument.class);
                 String value = getCmdValueFromTerminalAsString(annotation, cmd);
-                if ( Objects.nonNull(value) ) {
-                    setValue(field, value.trim());
-                }
+                setValue(field, value);
             }
         } catch (ParseException e) {
             HelpFormatter formatter = new HelpFormatter();
@@ -120,8 +112,7 @@ public class ArgumentParser {
 
     public String getCmdValueFromTerminalAsString(Argument annotation, CommandLine cmd) {
         String opt = annotation.value();
-        Argument.Type type = annotation.type();
-        switch (type) {
+        switch (annotation.type()) {
             case REQUIRED:
                 return cmd.getOptionValue(opt);
             case OPTIONAL:
@@ -134,11 +125,15 @@ public class ArgumentParser {
     }
 
     protected void setValue(Field f, String value) {
+        if ( value == null )
+            return;
+
         boolean wasAccessible = f.isAccessible();
         f.setAccessible(true);
         try {
+            value = value.trim();
             Class c = f.getType();
-            Function<String, ?> func = fieldsValueSetters.get(c);
+            Function<String, ?> func = stringValueTransformer.get(c);
             Object converted = func.apply(value);
             f.set(this, converted);
         } catch (Exception e) {
@@ -149,54 +144,6 @@ public class ArgumentParser {
     }
 
 
-
-
-
-    private void configureDefaultFieldsValueSetters () {
-        setFieldsValueSetters(boolean.class, Boolean.class,    Boolean::valueOf);
-        setFieldsValueSetters(int.class,     Integer.class,    Integer::valueOf);
-        setFieldsValueSetters(byte.class,    Byte.class,       Byte::valueOf);
-        setFieldsValueSetters(char.class,    Character.class,  x -> x.charAt(0));
-        setFieldsValueSetters(short.class,   Short.class,      Short::valueOf);
-        setFieldsValueSetters(long.class,    Long.class,       Long::valueOf);
-        setFieldsValueSetters(float.class,   Float.class,      Float::valueOf);
-        setFieldsValueSetters(double.class,  Double.class,     Double::valueOf);
-
-        setFieldsValueSetters(String.class, x -> x);
-        setFieldsValueSetters(Date.class,   ArgumentParser::toDate);
-        setFieldsValueSetters(File.class,   File::new);
-        setFieldsValueSetters(Path.class,   Paths::get);
-    }
-
-
-    public <T> void setFieldsValueSetters (Class primitive, Class wrapper, Function<String, T> converter) {
-        setFieldsValueSetters (wrapper, converter);
-        fieldsValueSetters.put(primitive, converter);
-    }
-
-    public <T> void setFieldsValueSetters (Class type, Function<String, T> converter) {
-        Class array = Array.newInstance(type, 0).getClass();
-        fieldsValueSetters.put(type,   converter);
-        fieldsValueSetters.put(array,  toArray(type, converter));
-    }
-
-    public <T> Function<String, Object> toArray (Class<T> type, Function<String, T> converter) {
-        return (stringWithSeparator) -> {
-
-            List<String> values = Arrays.asList(stringWithSeparator.split(SEPARATOR))
-                    .stream()
-                    .filter(this::defined)
-                    .map(String::trim)
-                    .collect(Collectors.toList());
-
-            Object array = Array.newInstance(type, values.size());
-            for (int i=0; i<values.size(); i++) {
-                Object converted = converter.apply(values.get(i));
-                Array.set(array, i, type.cast(converted));
-            }
-            return array;
-        };
-    }
 
 
 
@@ -220,20 +167,91 @@ public class ArgumentParser {
         }
     }
 
-    private void check (boolean isOK, String exceptionMsg) {
-        if (!isOK) {
-            throw new ParsingException.IllDefinedOptions(exceptionMsg);
-        }
+    public List<Field> getArgumentAnnotationsThroughInheritance() {
+        ArrayList<Field> result = new ArrayList<>();
+        Class obj = getClass();
+        do {
+            Field[] fields =obj.getDeclaredFields();
+            Arrays.asList(fields).stream().filter(ArgumentParser::isArgument).forEach(result::add);
+            obj = obj.getSuperclass();
+        } while ( Objects.nonNull(obj) );
+        return result;
     }
 
-    private boolean defined (String s) {
-        return Objects.nonNull(s) && !s.isEmpty() && !Argument.UNDEFINED.equals(s);
+    public void configureDefaultFieldsValueSetters () {
+        stringValueTransformer.put(boolean.class, Boolean::valueOf);
+        stringValueTransformer.put(int.class,     Integer::valueOf);
+        stringValueTransformer.put(byte.class,    Byte::valueOf);
+        stringValueTransformer.put(char.class,    x -> x.charAt(0));
+        stringValueTransformer.put(short.class,   Short::valueOf);
+        stringValueTransformer.put(long.class,    Long::valueOf);
+        stringValueTransformer.put(float.class,   Float::valueOf);
+        stringValueTransformer.put(double.class,  Double::valueOf);
+
+        stringValueTransformer.put(Boolean.class,    Boolean::valueOf);
+        stringValueTransformer.put(Integer.class,    Integer::valueOf);
+        stringValueTransformer.put(Byte.class,       Byte::valueOf);
+        stringValueTransformer.put(Character.class,  x -> x.charAt(0));
+        stringValueTransformer.put(Short.class,      Short::valueOf);
+        stringValueTransformer.put(Long.class,       Long::valueOf);
+        stringValueTransformer.put(Float.class,      Float::valueOf);
+        stringValueTransformer.put(Double.class,     Double::valueOf);
+
+        stringValueTransformer.put(Boolean[].class,    toArray(Boolean.class, Boolean::valueOf));
+        stringValueTransformer.put(Integer[].class,    toArray(Integer.class, Integer::valueOf));
+        stringValueTransformer.put(Byte[].class,       toArray(Byte.class,    Byte::valueOf));
+        stringValueTransformer.put(Character[].class,  toArray(Character.class, x -> x.charAt(0)));
+        stringValueTransformer.put(Short[].class,      toArray(Short.class, Short::valueOf));
+        stringValueTransformer.put(Long[].class,       toArray(Long.class,  Long::valueOf));
+        stringValueTransformer.put(Float[].class,      toArray(Float.class, Float::valueOf));
+        stringValueTransformer.put(Double[].class,     toArray(Double.class, Double::valueOf));
+
+        stringValueTransformer.put(String.class,    x -> x);
+        stringValueTransformer.put(Date.class,      ArgumentParser::toDate);
+        stringValueTransformer.put(File.class,      File::new);
+        stringValueTransformer.put(Path.class,      Paths::get);
+
+        stringValueTransformer.put(String[].class,    toArray(String.class, x->x));
+        stringValueTransformer.put(Date[].class,      toArray(Date.class, ArgumentParser::toDate));
+        stringValueTransformer.put(File[].class,      toArray(File.class, File::new));
+        stringValueTransformer.put(Path[].class,      toArray(Path.class, Paths::get));
+    }
+
+    public <T> Function<String, Object> toArray (Class<T> type, Function<String, T> parseAsFunction) {
+        return (stringWithSeparator) -> {
+            String[] inputValues = stringWithSeparator.split(Argument.DEFAULT_SEPARATOR);
+            List<String> inputValuesTrimmed = Arrays.asList(inputValues).stream()
+                    .filter(ArgumentParser::defined)
+                    .map(String::trim)
+                    .collect(toList());
+
+            T[] resultArray = (T[])Array.newInstance(type, inputValuesTrimmed.size());
+            Arrays.setAll(resultArray, index -> {
+                String str = inputValuesTrimmed.get(index);
+                T convertedValue = (T)parseAsFunction.apply(str);
+                return convertedValue;
+            });
+            return resultArray;
+        };
+    }
+
+
+    private void check (boolean isOK, String exceptionMsg) {
+        if (!isOK) throw new ParsingException.IllDefinedOptions(exceptionMsg);
+    }
+
+    private static boolean isArgument (Field f) {
+        return Objects.nonNull(f.getAnnotation(Argument.class));
+    }
+
+    private static boolean defined (String s) {
+        boolean undefine = Objects.isNull(s) || s.isEmpty() || Argument.UNDEFINED.equals(s);
+        return !undefine;
     }
 
     @SneakyThrows
     private static Date toDate (String s) {
-        return new SimpleDateFormat (DEFAULT_DATE_FORMAT).parse(s);
+        return new SimpleDateFormat (Argument.DEFAULT_DATE_FORMAT).parse(s);
     }
-
 
 }
