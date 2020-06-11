@@ -1,0 +1,17 @@
+{
+  "summary": {
+    "title": "Test",
+    "owner": "Tak",
+    "description": "some"
+  },
+  "detail": {
+    "contributors": [],
+    "diagrams": [
+      {
+        "title": "d1",
+        "thumbnail": "./public/content/images/thumbnail.jpg",
+        "id": 0
+      }
+    ]
+  }
+}
